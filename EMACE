@@ -1,0 +1,923 @@
+-- Import required interfaces
+local IVEngineClient = utils.find_interface("engine.dll", "VEngineClient014") or error("Engine client is invalid")
+local IVEngineClientPtr = ffi.cast("void***", IVEngineClient)
+
+-- Import clantag changer
+local set_clantag = ffi.cast("int(__fastcall*)(const char*, const char*)", utils.find_pattern("engine.dll", "53 56 57 8B DA 8B F9 FF 15"))
+local last_clantag = nil
+local last_clantag_update = 0 -- Initialize the variable at the top level
+
+print("-> EMACE ON DAT BITCH");
+print(" _____________________________________ ");
+print("| Emace Loaded                        |");
+print("| Alpha/Nightly                       |");
+print("| Version: 19.12                      |");
+print("| Dev: exotic (bleedplz)              |");
+print("| Support: Tyrone (mr_h5x)            |");
+print("|_____________________________________|");
+
+--#region Defines
+local hitgroup_str = {
+    [0] = 'generic',
+    'head', 'chest', 'stomach',
+    'left arm', 'right arm',
+    'left leg', 'right leg',
+    'neck', 'generic', 'gear'
+}
+local logs_data = {}
+local functions = {}
+local ss = {}
+ss.x, ss.y = render.get_screen_size()
+local fonts = {
+    main = render.create_font("verdana.ttf", 11, render.font_flag_shadow),
+    esp = render.create_font("verdana.ttf", 12, render.font_flag_shadow),
+    nextfont = render.create_font("calibri.ttf", 23, render.font_flag_shadow),
+    nextfont2 = render.create_font("calibri.ttf", 13, render.font_flag_shadow),
+    nextfont3 = render.create_font("calibrib.ttf", 23, render.font_flag_shadow),
+    fontdmg = render.create_font("verdana.ttf", 13, render.font_flag_shadow),
+    pixel = render.font_esp,
+    calibri11 = render.create_font("calibri.ttf", 11, render.font_flag_outline),
+    calibri13 = render.create_font("calibri.ttf", 13, render.font_flag_shadow),
+    verdana = render.create_font("verdana.ttf", 13, render.font_flag_outline),
+    tahoma = render.create_font("tahoma.ttf", 13, render.font_flag_shadow),
+    verdana2 = render.create_font("verdana.ttf", 12, 0),
+    logo = render.create_font("verdana.ttf", 45, render.font_flag_outline)
+}
+--#endregion
+
+--#region Menu
+local menu = {
+    checkboxes = {
+        hit = gui.add_checkbox("hit", "lua>tab a"),
+        resolve = gui.add_checkbox("resolve", "lua>tab a"), 
+        spread = gui.add_checkbox("spread", "lua>tab a"),
+        server_correction = gui.add_checkbox("server correction", "lua>tab a"),
+        extrapolation = gui.add_checkbox("extrapolation", "lua>tab a"),
+        anti_exploit = gui.add_checkbox("anti-exploit", "lua>tab a")
+    },
+    colors = {
+        hit = gui.add_colorpicker("lua>tab a>hit", false, render.color(148,199,59)),
+        resolve = gui.add_colorpicker("lua>tab a>resolve", false, render.color(255,0,0)),
+        spread = gui.add_colorpicker("lua>tab a>spread", false, render.color(255,199,0)),
+        server_correction = gui.add_colorpicker("lua>tab a>server correction", false, render.color(255,127,127)),
+        extrapolation = gui.add_colorpicker("lua>tab a>extrapolation", false, render.color(255,199,127)),
+        anti_exploit = gui.add_colorpicker("lua>tab a>anti-exploit", false, render.color(255,127,127))
+    }
+}
+--#endregion
+
+--#region Functions
+local function manage_logs()
+    if #logs_data > 15 then
+        table.remove(logs_data, 1)
+    end
+end
+
+functions.multi_color = function(data, x, y, font, alphamod)
+    local textp = 0
+    local totaltext = ""
+    for _, v in pairs(data) do
+        totaltext = totaltext .. v.text
+    end
+    local ttx = {}
+    ttx.x, ttx.y = render.get_text_size(font, totaltext)
+    for _, v in pairs(data) do
+        if alphamod then
+            v.clr.a = alphamod
+        end
+        render.text(font, x + textp - ttx.x/2, y, v.text, v.clr)
+        textp = textp + render.get_text_size(font, v.text)
+    end
+end
+
+functions.on_miss = function(s)
+    if menu.checkboxes[s.result] and menu.checkboxes[s.result]:get_bool() and s.result ~= "hit" then
+        local accent = render.color("#FFFFFF")
+        local rescol = menu.colors[s.result]:get_color()
+        table.insert(logs_data, {
+            data = {
+                {text = "Missed", clr = accent},
+                {text = (" %s"):format(engine.get_player_info(s.target).name), clr = rescol},
+                {text = "'s", clr = accent},
+                {text = (" %s"):format(hitgroup_str[s.client_hitgroup]), clr = rescol},
+                {text = " due to", clr = accent},
+                {text = (" %s"):format(s.result), clr = rescol},
+                {text = " (", clr = accent},
+                {text = ("%s"):format(math.floor(.5 + s.hitchance)), clr = rescol},
+                {text = "% hitchance)", clr = accent}
+            },
+            info = {
+                tick = s.tick,
+                alpha = render.create_animator_float(0, .1)
+            }
+        })
+        manage_logs()
+    end
+end
+
+functions.on_hit = function(e)
+    if not menu.checkboxes.hit:get_bool() then return end
+    local attacker = e:get_int("attacker")
+    local attacked = e:get_int("userid")
+    local attacked_index = engine.get_player_for_user_id(attacked)
+    local attacked_name = engine.get_player_info(attacked_index)['name']
+    
+    if engine.get_player_for_user_id(attacker) == engine.get_local_player() and attacked ~= attacker then
+        local accent = render.color("#FFFFFF")
+        local rescol = menu.colors.hit:get_color()
+        table.insert(logs_data, {
+            data = {
+                {text = "Hit", clr = accent},
+                {text = (" %s"):format(attacked_name), clr = rescol},
+                {text = "'s", clr = accent},
+                {text = (" %s"):format(hitgroup_str[e:get_int("hitgroup")]), clr = rescol},
+                {text = " for", clr = accent},
+                {text = (" %s"):format(e:get_int("dmg_health")), clr = rescol},
+                {text = " damage (", clr = accent},
+                {text = ("%s"):format(e:get_int("health")), clr = rescol},
+                {text = " health remaining)", clr = accent}
+            },
+            info = {
+                tick = global_vars.tickcount,
+                alpha = render.create_animator_float(0, .1)
+            }
+        })
+        manage_logs()
+    end
+end
+
+functions.on_draw = function()
+    for k, v in pairs(logs_data) do
+        v.info.alpha:direct(255)
+        if 2.9-(global_vars.tickcount/64-v.info.tick/64) < 0 then
+            v.info.alpha:direct(0)
+        end
+        functions.multi_color(v.data, ss.x/2, ss.y/2 + 160 + (13 * (k-1))+(v.info.alpha:get_value()/255*13), fonts.main, v.info.alpha:get_value())
+        if v.info.alpha:get_value() <= 0.1 and (2.9-(global_vars.tickcount/64-v.info.tick/64) < 0) then
+            table.remove(logs_data, k)
+        end
+    end
+end
+--#endregion
+
+--#region Callbacks
+function on_paint()
+    functions.on_draw()
+end
+
+function on_shot_registered(e)
+    functions.on_miss(e)
+end
+
+function on_player_hurt(e)
+    functions.on_hit(e)
+end
+--#endregion
+
+-- Import killsay
+local EmaceKillsay = {
+    "$ €-M A C E on top, you're just a nn dog",
+    "€xotic told me everyone miss new $ €-M A C E update, its true", 
+    "€xotic told me $ €-M A C E has the best resolver, its true",
+    "imagine not using $ €-M A C E, couldn't be me",
+    "ez nn dog get tapped by $ €-M A C E",
+    "$ €-M A C E > your paste",
+    "get good get $ €-M A C E",
+    "you're so bad even $ €-M A C E can tap you",
+    "$ €-M A C E user = your worst nightmare",
+    "crying? get $ €-M A C E and stop being bad",
+    "another nn destroyed by $ €-M A C E",
+    "you should try $ €-M A C E, might help your negative kd",
+    "$ €-M A C E tapping session initiated",
+    "get clapped by $ €-M A C E user",
+    "$ €-M A C E > all",
+    "imagine dying to $ €-M A C E user LOL",
+    "back to hvh practice servers you go",
+    "$ €-M A C E just deleted your existence",
+    "you just got $ €-M A C E'd",
+    "even with $ €-M A C E it's too easy",
+    "sit down nn, $ €-M A C E stands up",
+    "$ €-M A C E making you rage quit since 2023",
+    "can't handle $ €-M A C E? uninstall",
+    "$ €-M A C E: your daily dose of humiliation",
+    "you vs $ €-M A C E = ez clap",
+    "another day, another nn destroyed by $ €-M A C E",
+    "$ €-M A C E is your daddy now",
+    "get owned by $ €-M A C E supremacy",
+    "bow down to $ €-M A C E technology",
+    "$ €-M A C E users stay winning",
+    "you just got styled on by $ €-M A C E",
+    "$ €-M A C E diff too big",
+    "stay mad, $ €-M A C E stays winning",
+    "$ €-M A C E user = automatic W",
+    "imagine not having $ €-M A C E in 2023",
+    "$ €-M A C E: making nn's rage since day 1",
+    "get good or get $ €-M A C E'd",
+    "$ €-M A C E gap too wide",
+    "another victim of $ €-M A C E superiority",
+    "$ €-M A C E owns you + ratio",
+    "skill issue? nah, $ €-M A C E issue",
+    "$ €-M A C E resolver hits different fr fr",
+    "$ €-M A C E's resolver just deleted your aa",
+    "€xotic wasn't lying about $ €-M A C E resolver",
+    "get some $ €-M A C E and maybe you'll hit something",
+    "when you see $ €-M A C E, you see victory",
+    "$ €-M A C E: dominating the game since inception",
+    "no one escapes $ €-M A C E's wrath",
+    "fear the power of $ €-M A C E",
+    "with $ €-M A C E, every shot counts",
+    "$ €-M A C E turns your plays into our wins",
+    "embrace the superior $ €-M A C E tactics",
+    "$ €-M A C E's precision is unmatched",
+    "let $ €-M A C E show you how it's done",
+    "$ €-M A C E: where legends rise",
+    "crush the competition with $ €-M A C E",
+    "trust in $ €-M A C E, trust in victory",
+    "$ €-M A C E never misses",
+    "rise through the ranks with $ €-M A C E",
+    "master the game with $ €-M A C E by your side"
+}
+
+-- GUI elements
+cb = gui.add_checkbox;
+find = gui.get_config_item;
+slider = gui.add_slider;
+combo = gui.add_combo;
+-- Create GUI
+enable_killsay = combo("Killsay", "lua>tab a", {"Off", "Emace"});
+enable_pitch = cb("Pitch Exploit", "lua>tab a");
+enable_dp = cb("DP Exploit", "lua>tab a");
+pitch_mode = combo("Pitch Mode", "lua>tab a", {"Up", "Zero"});
+enable_roll = cb("Roll Exploit", "lua>tab a");
+enable_havoc = cb("Havoc Roll", "lua>tab a");
+enable_jitter = cb("Skeeter", "lua>tab a");
+jitter_amount = slider("Add Jitter Amount", "lua>tab a", 0, 180, 33);
+jitter_delay = slider("Skeeter Delay (ms)", "lua>tab a", 20, 200, 50);
+pitch_delay = slider("Pitch Up Time (ms)", "lua>tab a", 5, 40, 25);
+defensive_air = cb("Defensive in Air", "lua>tab a");
+defensive_air_mode = combo("Defensive Air Mode", "lua>tab a", {"Roll", "No Roll"});
+fakelag_exploit = cb("Fakelag Exploit", "lua>tab a");
+
+-- Visual elements
+local watermarkd = gui.add_checkbox("Watermark", "lua>tab b")
+local infobar = gui.add_checkbox("Info Tab", "lua>tab b")
+local arrowsn = gui.add_checkbox("Arrows", "lua>tab b")
+local keybinds = gui.add_checkbox("Keybinds", "lua>tab b")
+local indicatorsmain = gui.add_checkbox("Indicators", "lua>tab b")
+local indicatorstype = gui.add_combo("Indicators | Type", "lua>tab b", {"Old", "New"})
+local infotabflag = gui.add_combo("Info Tab | Flag", "lua>tab b", {"Russia", "Germany", "Estonia", "Hungary", "Reichsflagge", "Ukraine", "Belarus"})
+
+-- Colors
+local watermark_bcolor = gui.add_checkbox("Watermark Color", "lua>tab b")
+local watermark_color = gui.add_colorpicker("lua>tab b>watermark color", true)
+local keybinds_bcolor = gui.add_checkbox("Keybinds Color", "lua>tab b")
+local keybinds_color = gui.add_colorpicker("lua>tab b>keybinds color", true)
+local infobar_bcolor = gui.add_checkbox("Infobar Color", "lua>tab b")
+local infobar_color = gui.add_colorpicker("lua>tab b>infobar color", true)
+local indicator_bcolor = gui.add_checkbox("Indicator Color", "lua>tab b")
+local indicator_color = gui.add_colorpicker("lua>tab b>indicator color", true)
+
+-- Fonts
+local nextfont = render.create_font("calibri.ttf", 23, render.font_flag_shadow)
+local nextfont2 = render.create_font("calibri.ttf", 13, render.font_flag_shadow)
+local nextfont3 = render.create_font("calibrib.ttf", 23, render.font_flag_shadow)
+local fontdmg = render.create_font("verdana.ttf", 13, render.font_flag_shadow)
+local pixel = render.font_esp
+local calibri11 = render.create_font("calibri.ttf", 11, render.font_flag_outline)
+local calibri13 = render.create_font("calibri.ttf", 13, render.font_flag_shadow)
+local verdana = render.create_font("verdana.ttf", 13, render.font_flag_outline)
+local tahoma = render.create_font("tahoma.ttf", 13, render.font_flag_shadow)
+local verdana2 = render.create_font("verdana.ttf", 12, 0)
+local logo = render.create_font("verdana.ttf", 45, render.font_flag_outline)
+
+-- Screen size
+local screen_size = {render.get_screen_size()}
+
+-- Menu
+local keybinds_x = gui.add_slider("keybinds_x", "lua>tab a", 0, screen_size[1], 1)
+local keybinds_y = gui.add_slider("keybinds_y", "lua>tab a", 0, screen_size[2], 1)
+gui.set_visible("lua>tab a>keybinds_x", false)
+gui.set_visible("lua>tab a>keybinds_y", false)
+
+function animate(value, cond, max, speed, dynamic, clamp)
+    speed = speed * global_vars.frametime * 20
+    if dynamic == false then
+        if cond then
+            value = value + speed
+        else
+            value = value - speed
+        end
+    else
+        if cond then
+            value = value + (max - value) * (speed / 100)
+        else
+            value = value - (0 + value) * (speed / 100)
+        end
+    end
+    if clamp then
+        if value > max then
+            value = max
+        elseif value < 0 then
+            value = 0
+        end
+    end
+    return value
+end
+
+function drag(var_x, var_y, size_x, size_y)
+    local mouse_x, mouse_y = input.get_cursor_pos()
+    local drag = false
+    if input.is_key_down(0x01) then
+        if mouse_x > var_x:get_int() and mouse_y > var_y:get_int() and mouse_x < var_x:get_int() + size_x and mouse_y < var_y:get_int() + size_y then
+            drag = true
+        end
+    else
+        drag = false
+    end
+    if (drag) then
+        var_x:set_int(mouse_x - (size_x / 2))
+        var_y:set_int(mouse_y - (size_y / 2))
+    end
+end
+
+function watermark()
+    if watermarkd:get_bool() then
+        local x, y = render.get_screen_size()
+        local text = "emace.lua | ALPHA | build: 19.12.23"
+        local textx, texty = render.get_text_size(nextfont, text)
+        render.rect_filled_rounded(x-12, 8, x-textx-18, 25, render.color(watermark_color:get_color().r, watermark_color:get_color().g, watermark_color:get_color().b, 50), 1.5, render.all)
+        render.text(nextfont, x-textx-14, 13, text, render.color(255, 255, 255, 255))
+    end
+end
+
+function gui_controller()
+    local text = "Exotica.lua"
+    local username = engine.get_player_info(engine.get_local_player()).name
+    local textx, texty = render.get_text_size(pixel, text)
+    local text2 = "user: " ..engine.get_player_info(engine.get_local_player()).name.. ""
+    local text2x, text2y = render.get_text_size(pixel, text2)
+    local infotabflag = infotabflag:get_int()
+    local alpha2 = math.floor(math.abs(math.sin(global_vars.realtime) * 2) * 255)
+    if infobar:get_bool() then
+        render.rect_filled_multicolor(5, y / 2, 80, (y / 2) + 19,infobar_color:get_color(), render.color(0,0,0,0),render.color(0,0,0,0), infobar_color:get_color())
+        render.text(pixel, 37,(y / 2) + 2, "Lua Name:", render.color(255,255,255,255))
+        render.text(pixel, 80,(y / 2) + 2, "Exotica.lua ", render.color(183,110,0,255))
+        render.text(pixel, 37 + textx,(y / 2) + 1, " ", infobar_color:get_color())
+        render.text(pixel, 37,(y / 2) + 10, "Version: ", render.color(255,255,255,255))
+        render.text(pixel, 73,(y / 2) + 10, " [4.0.0 Realease]", render.color(183,110,0,255))
+        if infotabflag == 0 then
+            render.rect_filled(7, (y / 2) + 17, 16, (y / 2) + 2,render.color(0, 43, 127, 255))
+            render.rect_filled(16, (y / 2) + 17, 24, (y / 2) + 2,render.color(252, 209, 22, 255))
+            render.rect_filled(24, (y / 2) + 17, 32, (y / 2) + 2,render.color(206, 17, 38, 255))
+        end
+        if infotabflag == 1 then
+            render.rect_filled(7, (y / 2) + 2, 32, (y / 2) + 7,render.color(0, 0, 0, 255))
+            render.rect_filled(7, (y / 2) + 7, 32, (y / 2) + 12,render.color(221, 0, 0,255))
+            render.rect_filled(7, (y / 2) + 12, 32, (y / 2) + 17,render.color(255, 204, 0,255))
+        end
+    end
+end
+function on_keybinds()
+    if not keybinds:get_bool() then return end
+    local pos = {keybinds_x:get_int(), keybinds_y:get_int()}
+    local size_offset = 0
+    local binds = {
+        gui.get_config_item("rage>aimbot>aimbot>double tap"):get_bool(),
+        gui.get_config_item("rage>aimbot>aimbot>hide shot"):get_bool(),
+        gui.get_config_item("rage>aimbot>ssg08>scout>override"):get_bool(),
+        gui.get_config_item("rage>aimbot>aimbot>headshot only"):get_bool(),
+        gui.get_config_item("misc>movement>fake duck"):get_bool()
+    }
+    local binds_name = {
+        "Doubletap",
+        "Hideshots", 
+        "Min. Damage",
+        "HeadShot Only",
+        "Fake duck",
+        "HeadShot Only"
+    }
+    if not binds[4] then
+        if not binds[5] then
+            if not binds[3] then
+                if not binds[1] then
+                    if not binds[6] then
+                        if not binds[2] then
+                            size_offset = 0
+                        else
+                            size_offset = 38
+                        end
+                    else
+                        size_offset = 40
+                    end
+                else
+                    size_offset = 41
+                end
+            else
+                size_offset = 54
+            end
+        else
+            size_offset = 63
+        end
+    end
+end
+-- Get config items
+pitch = find("Rage>Anti-Aim>Angles>Pitch");
+lean = find("Rage>Anti-Aim>Desync>Lean amount");
+add = find("Rage>Anti-Aim>Angles>Add");
+yaw_add = find("Rage>Anti-Aim>Angles>Yaw add");
+roll_lean = find("Rage>Anti-Aim>Desync>Roll lean");
+fake = find("Rage>Anti-Aim>Desync>Fake");
+fake_amount = find("Rage>Anti-Aim>Desync>Fake amount");
+comp_angle = find("Rage>Anti-Aim>Desync>Compensate angle");
+jitter = find("Rage>Anti-Aim>Angles>Jitter");
+jitter_range = find("Rage>Anti-Aim>Angles>Jitter range");
+fakelag_mode = find("Rage>Anti-Aim>Fakelag>Mode");
+fakelag_limit = find("Rage>Anti-Aim>Fakelag>Limit");
+spin = find("Rage>Anti-Aim>Angles>Spin");
+spin_range = find("Rage>Anti-Aim>Angles>Spin range");
+spin_speed = find("Rage>Anti-Aim>Angles>Spin speed");
+dt = find("Rage>Aimbot>Aimbot>Double tap");
+hs = find("Rage>Aimbot>Aimbot>Hide shot");
+
+-- Track time
+last_pitch_switch = 0;
+last_roll_switch = 0;
+last_jitter_switch = 0;
+last_defensive_switch = 0;
+last_defensive_pitch = 0;
+last_defensive_up = 0;
+last_defensive_down = 0;
+last_fakelag_switch = 0;
+last_dp_switch = 0;
+last_fake_flick = 0;
+last_fake_jitter = 0;
+last_antibrute = 0;
+last_skeeter_switch = 0;
+pitch_up = true;
+roll_left = true;
+jitter_positive = true;
+defensive_zero = false;
+high_fakelag = true;
+saved_pitch_state = false;
+saved_dp_state = false;
+dp_state = 0;
+was_fakelag_on = false;
+prev_fakelag_state = false;
+saved_roll_state = false;
+skeeter_positive = true;
+
+-- Save original AA states
+local saved_fake_state = false
+local saved_fake_amount = 0
+local saved_comp_angle = 0
+local saved_roll_lean_state = 0
+
+-- Add defensive ground option
+local defensive_ground = gui.add_checkbox("Defensive Ground", "lua>tab a")
+
+function on_player_death(event)
+    local attacker = engine.get_player_for_user_id(event:get_int('attacker'));
+    local userid = engine.get_player_for_user_id(event:get_int('userid'));
+    local userInfo = engine.get_player_info(userid);
+    local lp = engine.get_local_player();
+    if attacker == lp and userid ~= lp and enable_killsay:get_int() == 1 then
+        engine.exec("say " .. EmaceKillsay[utils.random_int(1, #EmaceKillsay)])
+    end
+end
+
+-- Get player state function
+function get_player_state()
+    local local_player = entities.get_entity(engine.get_local_player())
+    if not local_player then return 0 end
+    
+    local isSW = info.fatality.in_slowwalk
+    local inAir = local_player:get_prop("m_hGroundEntity") == -1
+    local vel_x = math.floor(local_player:get_prop("m_vecVelocity[0]"))
+    local vel_y = math.floor(local_player:get_prop("m_vecVelocity[1]"))
+    local still = math.sqrt(vel_x ^ 2 + vel_y ^ 2) < 5
+    local cupic = bit.band(local_player:get_prop("m_fFlags"),bit.lshift(2, 0)) ~= 0
+
+    if inAir and cupic then
+        return 5 -- Air Duck
+    elseif inAir then
+        return 4 -- Air
+    elseif isSW then
+        return 3 -- Slow motion
+    elseif cupic then
+        return 6 -- Crouch
+    elseif still and not cupic then
+        return 1 -- Standing
+    elseif not still then
+        return 2 -- Moving
+    end
+    
+    return 0
+end
+
+function on_create_move()
+    local current_time = global_vars.curtime;
+    local state = get_player_state()
+
+    -- Check if defensive should be enabled
+    local should_defensive = (dt:get_bool() and info.fatality.dt_charging) or hs:get_bool()
+
+    -- Track fakelag exploit state changes
+    if fakelag_exploit:get_bool() ~= prev_fakelag_state then
+        if not fakelag_exploit:get_bool() then
+            was_fakelag_on = false
+        end
+        prev_fakelag_state = fakelag_exploit:get_bool()
+    end
+
+    -- Ground defensive logic
+    if defensive_ground:get_bool() and should_defensive and (state == 1 or state == 2 or state == 6) then
+        -- Save states
+        if not saved_fake_state then
+            saved_fake_state = fake:get_bool()
+            saved_fake_amount = fake_amount:get_int()
+            saved_comp_angle = comp_angle:get_int()
+            saved_roll_lean_state = roll_lean:get_int()
+        end
+
+        -- Enable jitter with random
+        jitter:set_bool(true)
+        jitter_range:set_int(33)
+        jitter:set_bool(hs:get_bool())
+
+        -- Defensive pitch sequence
+        local time_since_switch = current_time - last_defensive_switch
+
+        if time_since_switch < 0.12 then -- Down for 120ms
+            pitch:set_int(1)
+        elseif time_since_switch < 0.18 then -- None for 60ms
+            pitch:set_int(3)
+        elseif time_since_switch < 0.19 then -- Down for 10ms
+            pitch:set_int(1)
+        elseif time_since_switch < 0.20 then -- Zero for 10ms
+            pitch:set_int(0)
+        elseif time_since_switch < 0.23 then -- None for 30ms
+            pitch:set_int(3)
+        elseif time_since_switch < 0.39 then -- Up + spin for 160ms
+            pitch:set_int(2)
+            spin:set_bool(true)
+            spin_range:set_int(360)
+            spin_speed:set_int(120)
+        else
+            last_defensive_switch = current_time
+            spin:set_bool(false)
+        end
+    else
+        -- Restore original AA states when defensive off
+        if saved_fake_state then
+            fake:set_bool(saved_fake_state)
+            fake_amount:set_int(saved_fake_amount)
+            comp_angle:set_int(saved_comp_angle)
+            roll_lean:set_int(saved_roll_lean_state)
+            saved_fake_state = false
+        end
+        spin:set_bool(false)
+    end
+
+    -- Turn off roll when no roll defensive selected
+    if defensive_air_mode:get_int() == 1 then
+        roll_lean:set_int(0)
+        enable_roll:set_bool(false)
+    end
+
+    if defensive_air:get_bool() then
+        -- Set default pitch to down for standing/moving unless overridden
+        if (state == 1 or state == 2) and not enable_dp:get_bool() and not enable_pitch:get_bool() then
+            pitch:set_int(1)
+        end
+
+        if state == 4 then -- In air
+            -- Save states
+            if enable_pitch:get_bool() then saved_pitch_state = true end
+            if enable_dp:get_bool() then saved_dp_state = true end
+            
+            -- Save AA states before modifying
+            if not saved_fake_state then
+                saved_fake_state = fake:get_bool()
+                saved_fake_amount = fake_amount:get_int()
+                saved_comp_angle = comp_angle:get_int()
+                saved_roll_lean_state = roll_lean:get_int()
+            end
+            
+            -- Disable other exploits while in air
+            enable_pitch:set_bool(false)
+            enable_dp:set_bool(false)
+
+            if defensive_air_mode:get_int() == 0 then -- Roll mode (original defensive)
+                roll_lean:set_int(2)
+                enable_roll:set_bool(true)
+                
+                -- Always use skeeter (yaw add)
+                yaw_add:set_bool(true)
+                jitter:set_bool(false)
+                
+                -- Pitch and skeeter logic
+                local up_time = current_time - last_defensive_up
+                local zero_time = current_time - last_defensive_down
+                
+                if up_time >= 0.08 then -- Reset up timer every 80ms
+                    last_defensive_up = current_time
+                end
+                
+                if zero_time >= 0.16 then -- Reset zero timer every 160ms
+                    last_defensive_down = current_time
+                end
+                
+                if up_time <= 0.008 then -- Up for 8ms
+                    pitch:set_int(2)
+                    add:set_int(skeeter_positive and 30 or -30)
+                elseif zero_time <= 0.009 then -- Zero for 9ms
+                    pitch:set_int(0)
+                    add:set_int(skeeter_positive and 45 or -45)
+                else -- Down otherwise
+                    pitch:set_int(1)
+                    add:set_int(skeeter_positive and 26 or -26)
+                end
+                
+                -- Random skeeter delay between 45-55ms
+                local skeeter_delay = utils.random_float(0.045, 0.055)
+                if (current_time - last_skeeter_switch) >= skeeter_delay then
+                    skeeter_positive = not skeeter_positive
+                    last_skeeter_switch = current_time
+                end
+
+            else -- No Roll mode (new defensive)
+                enable_roll:set_bool(false)
+                roll_lean:set_int(0)
+                jitter:set_bool(false)
+                
+                -- Static fakelag
+                fakelag_mode:set_int(1)
+                fakelag_limit:set_int(2)
+                
+                -- Use Skeeter for jitter
+                yaw_add:set_bool(true)
+                
+                -- Optimized flick timings
+                local flick_time = current_time - last_fake_flick
+                if flick_time >= 0.05 then -- Every 50ms
+                    last_fake_flick = current_time
+                elseif flick_time <= 0.005 then -- Fake flick for 5ms
+                    pitch:set_int(2)
+                    add:set_int(skeeter_positive and 30 or -30)
+                    fake:set_bool(true)
+                    fake_amount:set_int(35)
+                elseif flick_time <= 0.015 then -- Debaim for 10ms
+                    pitch:set_int(1)
+                    add:set_int(skeeter_positive and 26 or -26)
+                else
+                    pitch:set_int(1)
+                    add:set_int(skeeter_positive and 26 or -26)
+                    
+                    -- Zero pitch every 100ms
+                    if (current_time - last_fake_jitter) >= 0.1 then
+                        last_fake_jitter = current_time
+                    elseif (current_time - last_fake_jitter) <= 0.01 then
+                        pitch:set_int(0)
+                        add:set_int(skeeter_positive and 45 or -45)
+                    end
+                end
+                
+                -- Random skeeter delay between 45-55ms
+                local skeeter_delay = utils.random_float(0.045, 0.055)
+                if (current_time - last_skeeter_switch) >= skeeter_delay then
+                    skeeter_positive = not skeeter_positive
+                    last_skeeter_switch = current_time
+                end
+            end
+            return
+        elseif state == 5 then -- Air crouch
+            -- Save states
+            if enable_pitch:get_bool() then saved_pitch_state = true end
+            if enable_dp:get_bool() then saved_dp_state = true end
+            
+            enable_pitch:set_bool(false)
+            enable_dp:set_bool(false)
+            
+            -- Air crouch logic
+            local zero_time = current_time - last_fake_flick
+            local up_time = current_time - last_defensive_up
+            
+            -- Reset timers
+            if zero_time >= 0.08 then -- Reset zero timer every 80ms
+                last_fake_flick = current_time
+            end
+            
+            if up_time >= 0.2 then -- Reset up timer every 200ms
+                last_defensive_up = current_time
+            end
+            
+            if up_time <= 0.03 then -- Spin up for 30ms
+                pitch:set_int(2)
+                yaw_add:set_bool(true)
+                add:set_int(((current_time * 1000) % 360) - 180) -- Spin from -180 to 180
+            elseif zero_time <= 0.012 then -- Zero pitch for 12ms
+                pitch:set_int(0)
+                yaw_add:set_bool(true)
+                -- First 6ms yaw 90, next 6ms yaw -90
+                add:set_int(zero_time <= 0.006 and 90 or -90)
+            else -- Default down pitch
+                pitch:set_int(1)
+                yaw_add:set_bool(true)
+                -- Skeeter with 15 range and 60ms delay
+                if (current_time - last_skeeter_switch) >= 0.06 then
+                    skeeter_positive = not skeeter_positive
+                    last_skeeter_switch = current_time
+                end
+                add:set_int(skeeter_positive and 15 or -15)
+            end
+            
+            -- Dynamic desync
+            fake:set_bool(true)
+            fake_amount:set_int(25)
+            return
+        else
+            if state == 2 then -- Moving
+                roll_lean:set_int(1)
+            end
+            
+            -- Restore states when not in air
+            if saved_pitch_state then
+                enable_pitch:set_bool(true)
+                saved_pitch_state = false
+            end
+            if saved_dp_state then
+                enable_dp:set_bool(true)
+                saved_dp_state = false
+            end
+            
+            -- Restore original AA states
+            if saved_fake_state then
+                fake:set_bool(saved_fake_state)
+                fake_amount:set_int(saved_fake_amount)
+                comp_angle:set_int(saved_comp_angle)
+                roll_lean:set_int(saved_roll_lean_state)
+                saved_fake_state = false
+            end
+        end
+    end
+
+    -- Original features when defensive air is off or not in air
+    if fakelag_exploit:get_bool() then
+        fakelag_mode:set_int(1)
+        if (current_time - last_fakelag_switch) >= 0.4 then
+            fakelag_limit:set_int(high_fakelag and 4 or 2)
+            high_fakelag = not high_fakelag
+            last_fakelag_switch = current_time
+            was_fakelag_on = true
+        end
+    end
+
+    if enable_dp:get_bool() and not enable_pitch:get_bool() then
+        local dp_time = current_time - last_dp_switch
+        if dp_state == 0 then
+            if dp_time >= 0.048 then
+                dp_state = 1
+                last_dp_switch = current_time
+            else
+                pitch:set_int(0)
+            end
+        elseif dp_state == 1 then
+            if dp_time >= 0.007 then
+                dp_state = 2
+                last_dp_switch = current_time
+            else
+                pitch:set_int(2)
+            end
+        else
+            if dp_time >= 0.013 then
+                dp_state = 0
+                last_dp_switch = current_time
+            else
+                pitch:set_int(1)
+            end
+        end
+    end
+
+    if enable_pitch:get_bool() then
+        local pitch_up_time = pitch_delay:get_int() / 1000
+        if pitch_mode:get_int() == 0 then
+            if pitch_up then
+                if (current_time - last_pitch_switch) >= pitch_up_time then
+                    pitch:set_int(1)
+                    pitch_up = false
+                    last_pitch_switch = current_time
+                else
+                    pitch:set_int(2)
+                end
+            else
+                if (current_time - last_pitch_switch) >= 0.25 then
+                    pitch:set_int(2)
+                    pitch_up = true
+                    last_pitch_switch = current_time
+                else
+                    pitch:set_int(1)
+                end
+            end
+        else
+            if pitch_up then
+                if (current_time - last_pitch_switch) >= pitch_up_time then
+                    pitch:set_int(1)
+                    pitch_up = false
+                    last_pitch_switch = current_time
+                else
+                    pitch:set_int(0)
+                end
+            else
+                if (current_time - last_pitch_switch) >= 0.25 then
+                    pitch:set_int(0)
+                    pitch_up = true
+                    last_pitch_switch = current_time
+                else
+                    pitch:set_int(1)
+                end
+            end
+        end
+    end
+    
+    if enable_roll:get_bool() then
+        roll_lean:set_int(2)
+        fake:set_bool(true)
+        fake_amount:set_int(-100)
+        comp_angle:set_int(100)
+        
+        if enable_havoc:get_bool() then
+            lean:set_int(1255)
+        else
+            if (current_time - last_roll_switch) >= 0.028125 then
+                lean:set_int(roll_left and -750 or 750)
+                roll_left = not roll_left
+                last_roll_switch = current_time
+            end
+        end
+    end
+
+    yaw_add:set_bool(enable_jitter:get_bool())
+    if enable_jitter:get_bool() then
+        local delay = jitter_delay:get_int() / 1000
+        if jitter_positive then
+            if (current_time - last_jitter_switch) >= delay then
+                local amount = jitter_amount:get_int()
+                add:set_int(amount)
+                jitter_positive = false
+                last_jitter_switch = current_time
+            end
+        else
+            if (current_time - last_jitter_switch) >= (delay + 0.005) then
+                local amount = jitter_amount:get_int()
+                add:set_int(-amount)
+                jitter_positive = true
+                last_jitter_switch = current_time
+            end
+        end
+    end
+    -- Animated clantag changer
+    local clantags = {
+        "$-$",
+        "$ EMACE $",
+        "$ E M A C E $",
+        "$ e-mace $",
+        "$ EMACE $ ",
+        "$ E M A C E $",
+        "$ e-mace $",
+        "$-$"
+    }
+    
+    local animation_time = 0.3
+    if (current_time - last_clantag_update) >= animation_time then
+        local clantag = clantags[math.floor(((current_time / animation_time) % #clantags) + 1)]
+        if last_clantag ~= clantag then
+            set_clantag(clantag, clantag)
+            last_clantag = clantag
+        end
+        last_clantag_update = current_time
+    end
+end
+
+function watermark()
+    if watermarkd:get_bool() then
+        local x, y = render.get_screen_size()
+        local text = "emace.lua | ALPHA | build: 19.12.23"
+        local textx, texty = render.get_text_size(nextfont, text)
+        render.rect_filled_rounded(x-12, 8, x-textx-18, 25, render.color(watermark_color:get_color().r, watermark_color:get_color().g, watermark_color:get_color().b, 50), 1.5, render.all)
+        render.text(nextfont, x-textx-14, 13, text, render.color(255, 255, 255, 255))
+    end
+end
+
+function arrowsd()
+    if arrowsn:get_bool() then
+        local x = render.get_screen_size()
+        render.text(render.font_esp, (x / 2) + 75, 535, ">", render.color(255,255,255,255))
+        render.text(render.font_esp, (x / 2) - 75, 535, "<", render.color(255,255,255,255))
+    end
+end
+
+function on_paint()
+    watermark()
+    arrowsd()
+end
+
